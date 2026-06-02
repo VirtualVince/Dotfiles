@@ -7,6 +7,7 @@
   "margin-right": 8,
 
   "modules-left": [
+    "custom/power",
     "clock",
     "hyprland/window"
   ],
@@ -16,10 +17,12 @@
   ],
 
   "modules-right": [
-    "cpu",
-    "memory",
-    "network",
-    "pulseaudio",
+    "custom/vpn",
+    "custom/mic",
+    "custom/volume",
+    "custom/gpu",
+    "custom/cpu",
+    "custom/memory",
     "tray"
   ],
 
@@ -45,38 +48,50 @@
     }
   },
 
-  "cpu": {
-    "format": "cpu {usage}%",
-    "interval": 2,
-    "tooltip": false
+  "custom/power": {
+    "format": "󰐥",
+    "tooltip-format": "power menu",
+    "on-click": "~/.config/waybar/scripts/powermenu.sh"
   },
 
-  "memory": {
-    "format": "ram {percentage}%",
-    "interval": 3,
-    "tooltip-format": "{used:.1f}G / {total:.1f}G"
+  "custom/cpu": {
+    "exec": "~/.config/waybar/scripts/cpu.sh",
+    "return-type": "json",
+    "interval": 3
   },
 
-  "network": {
-    "interface": "wlp0s20u10",
-    "format-wifi": "{essid}",
-    "format-ethernet": "eth",
-    "format-disconnected": "offline",
-    "tooltip-format-wifi": "{essid}  {signalStrength}%\n⇣ {bandwidthDownBytes}  ⇡ {bandwidthUpBytes}",
-    "tooltip-format-ethernet": "{ifname}  {ipaddr}",
+  "custom/gpu": {
+    "exec": "~/.config/waybar/scripts/gpu.sh",
+    "return-type": "json",
+    "interval": 3
+  },
+
+  "custom/memory": {
+    "exec": "~/.config/waybar/scripts/memory.sh",
+    "return-type": "json",
     "interval": 5
   },
 
-  "pulseaudio": {
-    "format": "{icon} {volume}%",
-    "format-muted": "muted",
-    "format-icons": {
-      "default": ["", "", ""]
-    },
+  "custom/volume": {
+    "exec": "~/.config/waybar/scripts/volume.sh",
+    "return-type": "json",
+    "interval": 1,
     "on-click": "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle",
     "on-scroll-up": "wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 5%+",
-    "on-scroll-down": "wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-",
-    "tooltip-format": "{desc}"
+    "on-scroll-down": "wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-"
+  },
+
+  "custom/mic": {
+    "exec": "~/.config/waybar/scripts/mic.sh",
+    "return-type": "json",
+    "interval": 2,
+    "on-click": "pactl set-source-mute @DEFAULT_SOURCE@ toggle"
+  },
+
+  "custom/vpn": {
+    "exec": "~/.config/waybar/scripts/vpn.sh",
+    "return-type": "json",
+    "interval": 10
   },
 
   "tray": {

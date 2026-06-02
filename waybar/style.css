@@ -48,17 +48,20 @@ window#waybar {
 
 #clock,
 #window,
-#cpu,
-#memory,
-#network,
-#pulseaudio,
+#custom-power,
+#custom-cpu,
+#custom-gpu,
+#custom-memory,
+#custom-volume,
+#custom-mic,
+#custom-vpn,
 #tray {
   padding: 4px 10px;
   margin: 4px 2px;
   color: #857870;
 }
 
-/* ── Specific overrides ──────────────────────── */
+/* ── Overrides ───────────────────────────────── */
 
 #clock {
   color: #e2d9d0;
@@ -66,25 +69,60 @@ window#waybar {
 }
 
 #window {
-  color: #857870;
+  color: #4a4440;
   font-style: italic;
 }
 
+#custom-power {
+  color: #4a4440;
+  font-size: 14px;
+  padding: 4px 12px 4px 6px;
+}
 
-#network.disconnected {
+#custom-power:hover {
+  color: #bf5959;
+  transition: color 0.15s ease;
+}
+
+/* ── State classes ───────────────────────────── */
+
+#custom-cpu.warning,
+#custom-gpu.warning,
+#custom-memory.warning {
+  color: #c99a6e;
+}
+
+#custom-cpu.critical,
+#custom-gpu.critical,
+#custom-memory.critical {
   color: #bf5959;
 }
 
-#pulseaudio.muted {
+#custom-volume.muted,
+#custom-mic.muted {
+  color: #4a4440;
+}
+
+#custom-mic.active {
+  color: #857870;
+}
+
+#custom-vpn.active {
+  color: #89a87a;
+}
+
+#custom-vpn.inactive {
   color: #4a4440;
 }
 
 /* ── Hover ───────────────────────────────────── */
 
-#cpu:hover,
-#memory:hover,
-#network:hover,
-#pulseaudio:hover {
+#custom-cpu:hover,
+#custom-gpu:hover,
+#custom-memory:hover,
+#custom-volume:hover,
+#custom-mic:hover,
+#custom-vpn:hover {
   color: #e2d9d0;
   transition: color 0.15s ease;
 }
