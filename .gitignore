@@ -1,0 +1,40 @@
+# ── SSH ──────────────────────────────────────────────────────
+.ssh/
+id_rsa*
+id_ed25519*
+id_ecdsa*
+*.pem
+known_hosts*
+authorized_keys
+
+# ── Browser profiles ─────────────────────────────────────────
+BraveSoftware/
+mozilla/
+chromium/
+google-chrome/
+firefox/
+
+# ── KDE / KWallet ────────────────────────────────────────────
+kwalletrc
+kwallet/
+KDE/
+plasma*/
+
+# ── Secrets & credentials ────────────────────────────────────
+.env
+*.env
+*secret*
+*password*
+*token*
+*credential*
+secrets/
+private/
+
+# ── App data / caches (not config) ───────────────────────────
+*.log
+*.cache
+*.lock
+__pycache__/
+.DS_Store
+Trash/
+recently-used.xbel

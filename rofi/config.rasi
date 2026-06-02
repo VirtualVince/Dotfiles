@@ -1,0 +1,86 @@
+/* Warm Minimal Rofi */
+
+configuration {
+    modi:                "drun,run,window";
+    font:                "JetBrainsMono Nerd Font 12";
+    show-icons:          true;
+    display-drun:        "";
+    display-run:         "";
+    display-window:      "";
+    drun-display-format: "{name}";
+    hover-select:        true;
+}
+
+* {
+    bg:       #1c1917;
+    bg-alt:   #252220;
+    fg:       #e2d9d0;
+    fg-dim:   #4a4440;
+    accent:   #c99a6e;
+    urgent:   #bf5959;
+
+    background-color: transparent;
+    text-color:       @fg;
+}
+
+window {
+    width:            540px;
+    location:         center;
+    border:           1px;
+    border-radius:    6px;
+    border-color:     #3d3733;
+    background-color: @bg;
+    padding:          0;
+}
+
+mainbox {
+    orientation:      vertical;
+    children:         [ inputbar, listview ];
+    spacing:          0;
+    background-color: @bg;
+}
+
+inputbar {
+    children:         [ entry ];
+    padding:          10px 14px;
+    background-color: @bg-alt;
+    border:           0 0 1px 0;
+    border-color:     #3d3733;
+}
+
+entry {
+    text-color:        @fg;
+    placeholder:       "search...";
+    placeholder-color: @fg-dim;
+}
+
+listview {
+    lines:            8;
+    columns:          1;
+    spacing:          0;
+    background-color: @bg;
+    padding:          4px 0;
+    scrollbar:        false;
+    fixed-height:     true;
+}
+
+element {
+    padding:          8px 14px;
+    spacing:          8px;
+    background-color: transparent;
+}
+
+element selected {
+    background-color: @bg-alt;
+    text-color:       @accent;
+    border:           0 0 0 2px;
+    border-color:     @accent;
+}
+
+element-text {
+    text-color: inherit;
+}
+
+element-icon {
+    size: 18px;
+}
