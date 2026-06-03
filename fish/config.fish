@@ -58,7 +58,11 @@ set -x QT_QPA_PLATFORM wayland
 set -gx ZINK_DISABLE_OVERRIDE 1
 
 # ---- Aliases ----
-alias ls  "exa --icons"
+if command -v eza >/dev/null 2>&1
+    alias ls "eza --icons"
+else
+    alias ls "ls --color=auto -F"
+end
 alias treelist "tree -a -I '.git'"
 
 # ---- FZF ----
