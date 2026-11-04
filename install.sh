@@ -19,6 +19,7 @@ LINKS=(
     "hypr/.luarc.json:$HOME/.config/hypr/.luarc.json"
     "hypr/hyprpaper.conf:$HOME/.config/hypr/hyprpaper.conf"
     "hypr/scripts:$HOME/.config/hypr/scripts"
+    "hypr/backgrounds:$HOME/.config/hypr/backgrounds"
     "rofi/config.rasi:$HOME/.config/rofi/config.rasi"
     "waybar/config:$HOME/.config/waybar/config"
     "waybar/style.css:$HOME/.config/waybar/style.css"
@@ -53,10 +54,3 @@ for entry in "${LINKS[@]}"; do
     run mkdir -p "$(dirname "$dst")"
     run ln -s "$src" "$dst"
 done
-
-if [ ! -d "$HOME/.config/hypr/backgrounds" ]; then
-    echo
-    echo "note: wallpapers are not included. Put two images at"
-    echo "      ~/.config/hypr/backgrounds/login-main.png and login-side.png,"
-    echo "      or edit ~/.config/hypr/hyprpaper.conf."
-fi

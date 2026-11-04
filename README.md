@@ -10,6 +10,7 @@ Hyprland desktop with a warm, minimal dark theme: Hyprland, Waybar, Rofi, fish a
 |---|---|---|
 | `hypr/hyprland.lua` | `~/.config/hypr/` | Hyprland config: binds, monitors, theme, autostart |
 | `hypr/hyprpaper.conf` | `~/.config/hypr/` | Wallpaper per monitor |
+| `hypr/backgrounds/` | `~/.config/hypr/backgrounds/` | ASCII-art wallpapers: main monitor (hands) and side monitor (dragon). Not my artwork; the dragon is from asciify.net |
 | `hypr/scripts/xwayland-primary.sh` | `~/.config/hypr/scripts/` | Marks the main monitor as XWayland primary, so Wine/Proton games open there |
 | `hypr/.luarc.json` | `~/.config/hypr/` | Lets lua-language-server autocomplete the Hyprland API |
 | `waybar/` | `~/.config/waybar/` | Bar config, style and status scripts (CPU, GPU, RAM, volume, mic, VPN, power menu) |
@@ -55,7 +56,7 @@ Some settings are specific to my hardware. Change these first:
 1. **Monitors**: `hypr/hyprland.lua`, MONITORS section. Monitors are matched by description. Get yours with `hyprctl monitors`. A fallback rule (`preferred`, `auto`) covers any monitor that doesn't match, so the config works before you edit it.
 2. **Workspace-to-monitor mapping**: same file. Workspaces 1–5 go to the main monitor and 6–10 to the side one.
 3. **Waybar workspaces**: `waybar/config` → `persistent-workspaces` uses connector names (`HDMI-A-1`, `DP-1`).
-4. **Wallpapers**: not included. Put images at `~/.config/hypr/backgrounds/login-main.png` and `login-side.png`, or edit `hypr/hyprpaper.conf` (it also uses connector names).
+4. **Wallpapers**: `hypr/hyprpaper.conf` assigns them by connector name (`HDMI-A-1`, `DP-1`). Replace the images in `hypr/backgrounds/` with your own if you like.
 5. **NVIDIA**: the `hl.env(...)` NVIDIA lines at the top of `hyprland.lua`. Remove them on AMD or Intel GPUs.
 6. **XWayland primary**: `hypr/scripts/xwayland-primary.sh` looks for an Acer monitor. Change the match to your main monitor, or ignore it if you don't game through Proton.
 
