@@ -1,0 +1,47 @@
+#!/bin/sh
+# autoclicker - control client for autoclickerd
+set -eu
+
+PID_FILE="${XDG_RUNTIME_DIR:-/tmp}/autoclicker.pid"
+STATE_FILE="${XDG_RUNTIME_DIR:-/tmp}/autoclicker.state"
+LOG_FILE="${XDG_RUNTIME_DIR:-/tmp}/autoclicker.log"
+
+usage() {
+    cat <<'EOF'
+usage: autoclicker {start|stop|toggle|status|test|log}
+
+  start   begin clicking   (sent on side-button press in hold mode)
+  stop    stop clicking    (sent on side-button release in hold mode)
+  toggle  flip clicking on/off
+  status  print idle | clicking | game | stopped
+  test    3 slow clicks, so you can aim at something harmless first
+  log     tail the daemon log
+EOF
+}
+
+pid() {
+    [ -r "$PID_FILE" ] || { echo "autoclickerd is not running" >&2; exit 1; }
+    cat "$PID_FILE"
+}
+
+case "${1:-}" in
+    start)  kill -s USR1  "$(pid)" ;;
+    stop)   kill -s USR2  "$(pid)" ;;
+    toggle) kill -s WINCH "$(pid)" ;;
+    status)
+        if [ -r "$STATE_FILE" ]; then cat "$STATE_FILE"; else echo "stopped"; fi
+        ;;
+    test)
+        p="$(pid)"
+        echo "3 clicks, 1s apart - move the cursor somewhere harmless now..."
+        sleep 2
+        i=0
+        while [ "$i" -lt 3 ]; do
+            kill -s USR1 "$p"; sleep 0.06; kill -s USR2 "$p"
+            i=$((i + 1)); sleep 1
+        done
+        echo "done - check $LOG_FILE for the click counts"
+        ;;
+    log)    tail -n 40 -f "$LOG_FILE" ;;
+    *)      usage; [ -n "${1:-}" ] && exit 2 || exit 0 ;;
+esac

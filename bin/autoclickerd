@@ -1,0 +1,557 @@
+#!/usr/bin/env python3
+"""
+autoclickerd - spam-left-click macro daemon for Hyprland.
+
+Creates a virtual mouse via /dev/uinput and clicks BTN_LEFT at a fixed rate
+while triggered from a mouse side button. Installs its own Hyprland binds and
+tears them down whenever a game is running, so games keep the raw button.
+
+No third-party modules: uinput is driven with raw ioctls from the stdlib.
+
+Signals (sent by the `autoclicker` client):
+  SIGUSR1  start clicking
+  SIGUSR2  stop clicking
+  SIGWINCH toggle
+"""
+
+import fcntl
+import os
+import re
+import signal
+import socket
+import struct
+import subprocess
+import sys
+import threading
+import time
+
+HOME = os.path.expanduser("~")
+RUNTIME = os.environ.get("XDG_RUNTIME_DIR") or "/tmp"
+PID_FILE = os.path.join(RUNTIME, "autoclicker.pid")
+STATE_FILE = os.path.join(RUNTIME, "autoclicker.state")
+LOG_FILE = os.path.join(RUNTIME, "autoclicker.log")
+CONFIG_FILE = os.path.join(
+    os.environ.get("XDG_CONFIG_HOME") or os.path.join(HOME, ".config"),
+    "autoclicker.conf",
+)
+CLIENT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "autoclicker")
+
+DEFAULTS = {
+    "MODE": "hold",          # hold = click while held, toggle = press on/off
+    "CPS": "20",             # clicks per second
+    "BUTTON": "276",         # 275 = BTN_SIDE (back), 276 = BTN_EXTRA (forward)
+    "HOLD_MS": "20",         # how long each click is held down
+    "MAX_SECONDS": "60",     # safety cap on one continuous burst
+    "GAME_CLASSES": "",      # extra window-class regexes, comma separated
+    "GAME_PROCS": "",        # extra process cmdline regexes, comma separated
+}
+
+
+def log(msg):
+    line = "%s  %s\n" % (time.strftime("%H:%M:%S"), msg)
+    try:
+        with open(LOG_FILE, "a") as fh:
+            fh.write(line)
+    except OSError:
+        pass
+    sys.stderr.write("autoclickerd: " + line)
+    sys.stderr.flush()
+
+
+def load_config():
+    cfg = dict(DEFAULTS)
+    try:
+        with open(CONFIG_FILE) as fh:
+            for raw in fh:
+                line = raw.split("#", 1)[0].strip()
+                if "=" not in line:
+                    continue
+                key, val = line.split("=", 1)
+                key = key.strip().upper()
+                if key in cfg:
+                    cfg[key] = val.strip()
+    except FileNotFoundError:
+        pass
+    return cfg
+
+
+def write_state(state):
+    try:
+        with open(STATE_FILE, "w") as fh:
+            fh.write(state + "\n")
+    except OSError:
+        pass
+
+
+# ---------------------------------------------------------------- uinput ----
+
+UINPUT_BASE = ord("U")
+
+
+def _IO(nr):
+    return (0 << 30) | (0 << 16) | (UINPUT_BASE << 8) | nr
+
+
+def _IOW(nr, size):
+    return (1 << 30) | (size << 16) | (UINPUT_BASE << 8) | nr
+
+
+UI_DEV_CREATE = _IO(1)
+UI_DEV_DESTROY = _IO(2)
+UI_DEV_SETUP = _IOW(3, 92)          # sizeof(struct uinput_setup)
+UI_SET_EVBIT = _IOW(100, 4)
+UI_SET_KEYBIT = _IOW(101, 4)
+UI_SET_RELBIT = _IOW(102, 4)
+
+EV_SYN, EV_KEY, EV_REL = 0x00, 0x01, 0x02
+SYN_REPORT = 0x00
+BTN_LEFT = 0x110
+REL_X, REL_Y = 0x00, 0x01
+
+EVENT_FMT = "llHHi"                 # struct input_event on 64-bit: 24 bytes
+
+
+class VirtualMouse:
+    """A uinput device that only ever emits left-click."""
+
+    def __init__(self):
+        self.fd = os.open("/dev/uinput", os.O_WRONLY | os.O_NONBLOCK)
+        # UI_SET_* take the bit by value, not as a pointer to it.
+        for ev in (EV_KEY, EV_REL):
+            fcntl.ioctl(self.fd, UI_SET_EVBIT, ev)
+        fcntl.ioctl(self.fd, UI_SET_KEYBIT, BTN_LEFT)
+        # REL_X/REL_Y are declared but never emitted; without them libinput
+        # would not classify this device as a pointer.
+        fcntl.ioctl(self.fd, UI_SET_RELBIT, REL_X)
+        fcntl.ioctl(self.fd, UI_SET_RELBIT, REL_Y)
+
+        setup = struct.pack(
+            "HHHH80sI",
+            0x03,                    # BUS_USB
+            0x1D1D, 0x0001, 0x0001,  # vendor / product / version
+            b"Autoclicker Virtual Mouse",
+            0,
+        )
+        fcntl.ioctl(self.fd, UI_DEV_SETUP, setup)
+        fcntl.ioctl(self.fd, UI_DEV_CREATE)
+        self.down = False
+        time.sleep(0.3)              # let libinput/Hyprland pick the device up
+
+    def _emit(self, etype, code, value):
+        os.write(self.fd, struct.pack(EVENT_FMT, 0, 0, etype, code, value))
+
+    def _sync(self):
+        self._emit(EV_SYN, SYN_REPORT, 0)
+
+    def click(self, hold_s):
+        self._emit(EV_KEY, BTN_LEFT, 1)
+        self._sync()
+        self.down = True
+        time.sleep(hold_s)
+        self._emit(EV_KEY, BTN_LEFT, 0)
+        self._sync()
+        self.down = False
+
+    def release(self):
+        if self.down:
+            self._emit(EV_KEY, BTN_LEFT, 0)
+            self._sync()
+            self.down = False
+
+    def close(self):
+        try:
+            self.release()
+            fcntl.ioctl(self.fd, UI_DEV_DESTROY)
+        except OSError:
+            pass
+        os.close(self.fd)
+
+
+# ----------------------------------------------------------- game detect ----
+
+# Matched against the basename of argv[0] and argv[1] only. Matching these
+# against the whole command line would fire on any process that merely
+# mentions them - a grep, a shell one-liner, an editor with foo.exe open.
+EXE_PATTERNS = [
+    r"\.exe$",
+    r"^wineserver$",
+    r"^gamescope$",
+]
+
+# Distinctive enough to match against the full command line. Steam launches
+# every game (native or Proton) through `reaper SteamLaunch AppId=...`, which
+# is why the Steam client itself never matches.
+CMD_PATTERNS = [
+    r"SteamLaunch AppId=",
+    r"proton\b.*waitforexitandrun",
+]
+
+CLASS_PATTERNS = [
+    r"^steam_app_\d+",
+    r"^gamescope$",
+    r"\.exe$",
+]
+
+
+class GameWatch:
+    """Tracks whether a game is running or focused."""
+
+    def __init__(self, cfg):
+        classes = list(CLASS_PATTERNS) + _extra(cfg["GAME_CLASSES"])
+        self.exe_re = re.compile("|".join(EXE_PATTERNS), re.I)
+        # User-supplied process patterns are matched against the full command
+        # line, since the user opted into them explicitly.
+        self.cmd_re = re.compile(
+            "|".join(CMD_PATTERNS + _extra(cfg["GAME_PROCS"])), re.I)
+        self.class_re = re.compile("|".join(classes), re.I)
+        self.active = False
+        self.reason = ""
+        self.focus_class = ""
+        self.on_change = None
+        self.lock = threading.Lock()
+
+    def scan_procs(self):
+        mypid = os.getpid()
+        for entry in os.listdir("/proc"):
+            if not entry.isdigit() or int(entry) == mypid:
+                continue
+            try:
+                with open("/proc/%s/cmdline" % entry, "rb") as fh:
+                    raw = fh.read()
+            except OSError:
+                continue
+            if not raw:
+                continue                      # kernel thread
+            argv = [a for a in raw.decode("utf-8", "replace").split("\0") if a]
+            if not argv:
+                continue
+            for arg in argv[:2]:
+                if self.exe_re.search(os.path.basename(arg)):
+                    return " ".join(argv)[:80]
+            if self.cmd_re.search(" ".join(argv)):
+                return " ".join(argv)[:80]
+        return None
+
+    def evaluate(self):
+        proc_hit = self.scan_procs()
+        class_hit = bool(self.focus_class and self.class_re.search(self.focus_class))
+        active = bool(proc_hit) or class_hit
+        reason = proc_hit if proc_hit else (self.focus_class if class_hit else "")
+        with self.lock:
+            changed = active != self.active
+            self.active = active
+            self.reason = reason
+        if changed and self.on_change:
+            self.on_change(active, reason)
+        return active
+
+
+def _extra(value):
+    return [p.strip() for p in value.split(",") if p.strip()]
+
+
+# --------------------------------------------------------------- hyprland ----
+
+
+def hyprctl(*args):
+    try:
+        res = subprocess.run(
+            ["hyprctl", *args],
+            capture_output=True, text=True, timeout=3,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        log("hyprctl %s failed: %s" % (" ".join(args), exc))
+        return
+    out = res.stdout.strip()
+    if res.returncode != 0 or out != "ok":
+        log("hyprctl %s -> %s" % (" ".join(args), out or res.stderr.strip()))
+
+
+def lua_str(s):
+    """Quote a Python string as a Lua string literal."""
+    return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def hyprctl_out(*args):
+    try:
+        res = subprocess.run(
+            ["hyprctl", *args],
+            capture_output=True, text=True, timeout=3,
+        )
+        return res.stdout
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+class Binds:
+    def __init__(self, cfg):
+        self.button = cfg["BUTTON"]
+        self.hold = cfg["MODE"].lower() == "hold"
+        self.installed = False
+
+    def install(self):
+        if self.installed:
+            return
+        action = "start" if self.hold else "toggle"
+        key = lua_str("mouse:%s" % self.button)
+        # Hyprland 0.57+ only accepts Lua over IPC (`hyprctl keyword` is gone).
+        # Invoked via /bin/sh so the bind works whether or not the client
+        # carries an exec bit.
+        hyprctl("eval", "hl.bind(%s, hl.dsp.exec_cmd(%s))"
+                % (key, lua_str("/bin/sh %s %s" % (CLIENT, action))))
+        if self.hold:
+            hyprctl("eval", "hl.bind(%s, hl.dsp.exec_cmd(%s), { release = true })"
+                    % (key, lua_str("/bin/sh %s stop" % CLIENT)))
+        self.installed = True
+        log("bind installed on mouse:%s (%s mode)" % (self.button, "hold" if self.hold else "toggle"))
+
+    def present(self):
+        """Ask Hyprland whether our binds actually exist right now."""
+        return ("mouse:%s" % self.button) in hyprctl_out("binds")
+
+    def reinstall(self):
+        """Reinstall after something dropped our binds (e.g. a config reload,
+        which discards every runtime `keyword bind`)."""
+        self.installed = False
+        self.install()
+
+    def remove(self):
+        if not self.installed:
+            return
+        # hl.unbind drops every bind on the key (press and release).
+        hyprctl("eval", "hl.unbind(%s)" % lua_str("mouse:%s" % self.button))
+        self.installed = False
+        log("bind removed from mouse:%s" % self.button)
+
+
+# ------------------------------------------------------------------ main ----
+
+
+class Daemon:
+    def __init__(self, cfg):
+        self.cfg = cfg
+        self.cps = max(1.0, float(cfg["CPS"]))
+        self.hold_s = max(0.001, float(cfg["HOLD_MS"]) / 1000.0)
+        self.max_seconds = float(cfg["MAX_SECONDS"])
+        period = 1.0 / self.cps
+        if self.hold_s >= period:
+            self.hold_s = period * 0.4
+        self.mouse = VirtualMouse()
+        self.games = GameWatch(cfg)
+        self.binds = Binds(cfg)
+        self.games.on_change = self.on_game_change
+        self.active = threading.Event()
+        self.trigger = threading.Event()
+        self.quit = threading.Event()
+
+    # -- triggers ---------------------------------------------------------
+    def start(self, *_):
+        if self.games.active:
+            log("ignored: game active (%s)" % self.games.reason)
+            return
+        self.active.set()
+        self.trigger.set()
+
+    def stop(self, *_):
+        self.active.clear()
+
+    def toggle(self, *_):
+        if self.active.is_set():
+            self.stop()
+        else:
+            self.start()
+
+    def on_game_change(self, active, reason):
+        if active:
+            log("game detected: %s" % reason)
+            self.active.clear()
+            self.binds.remove()
+            write_state("game")
+        else:
+            log("no game running")
+            self.binds.install()
+            write_state("idle")
+
+    # -- threads ----------------------------------------------------------
+    def clicker(self):
+        period = 1.0 / self.cps
+        while not self.quit.is_set():
+            if not self.trigger.wait(timeout=0.5):
+                continue
+            self.trigger.clear()
+            if self.quit.is_set():
+                break
+            write_state("clicking")
+            started = time.monotonic()
+            next_t = started
+            clicks = 0
+            while True:
+                self.mouse.click(self.hold_s)
+                clicks += 1
+                if not self.active.is_set() or self.quit.is_set():
+                    break
+                if self.games.active:
+                    log("stopping burst: game became active")
+                    break
+                if time.monotonic() - started > self.max_seconds:
+                    log("stopping burst: hit MAX_SECONDS=%g" % self.max_seconds)
+                    break
+                next_t += period
+                delay = next_t - time.monotonic()
+                if delay > 0:
+                    time.sleep(delay)
+                else:
+                    next_t = time.monotonic()
+            self.active.clear()
+            self.mouse.release()
+            write_state("game" if self.games.active else "idle")
+            log("burst: %d clicks in %.2fs" % (clicks, time.monotonic() - started))
+
+    def watcher(self):
+        """Hyprland socket2 events, with a periodic rescan as a backstop."""
+        his = os.environ.get("HYPRLAND_INSTANCE_SIGNATURE")
+        path = os.path.join(RUNTIME, "hypr", his, ".socket2.sock") if his else None
+        sock = None
+        if path and os.path.exists(path):
+            try:
+                sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                sock.connect(path)
+                sock.settimeout(2.0)
+            except OSError as exc:
+                log("socket2 unavailable (%s), polling only" % exc)
+                sock = None
+        else:
+            log("no Hyprland socket2, polling processes only")
+
+        buf = b""
+        last_scan = 0.0
+        last_verify = time.monotonic()
+        while not self.quit.is_set():
+            now = time.monotonic()
+            if now - last_scan > 3.0:
+                last_scan = now
+                self.games.evaluate()
+            # Backstop for anything that drops our binds without emitting a
+            # configreloaded event.
+            if now - last_verify > 30.0:
+                last_verify = now
+                if not self.games.active and not self.binds.present():
+                    log("binds went missing, reinstalling")
+                    self.binds.reinstall()
+            if sock is None:
+                self.quit.wait(timeout=1.0)
+                continue
+            try:
+                chunk = sock.recv(4096)
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            if not chunk:
+                break
+            buf += chunk
+            while b"\n" in buf:
+                line, buf = buf.split(b"\n", 1)
+                self.handle_event(line.decode("utf-8", "replace"))
+
+    def handle_event(self, line):
+        if ">>" not in line:
+            return
+        event, data = line.split(">>", 1)
+        if event == "activewindow":
+            self.games.focus_class = data.split(",", 1)[0]
+            self.games.evaluate()
+        elif event in ("openwindow", "closewindow"):
+            self.games.evaluate()
+        elif event == "configreloaded":
+            # A reload wipes runtime binds, so put ours back.
+            if not self.games.active:
+                log("hyprland config reloaded, reinstalling binds")
+                self.binds.reinstall()
+
+    def run(self):
+        signal.signal(signal.SIGUSR1, self.start)
+        signal.signal(signal.SIGUSR2, self.stop)
+        signal.signal(signal.SIGWINCH, self.toggle)
+        signal.signal(signal.SIGTERM, self.shutdown)
+        signal.signal(signal.SIGINT, self.shutdown)
+
+        log("started (pid %d, %g cps, button %s, mode %s)"
+            % (os.getpid(), self.cps, self.cfg["BUTTON"], self.cfg["MODE"]))
+
+        threading.Thread(target=self.clicker, daemon=True).start()
+        watch = threading.Thread(target=self.watcher, daemon=True)
+        watch.start()
+
+        self.games.evaluate()
+        if not self.games.active:
+            self.binds.install()
+            write_state("idle")
+
+        while not self.quit.is_set():
+            self.quit.wait(timeout=1.0)
+        self.cleanup()
+
+    def shutdown(self, *_):
+        self.quit.set()
+        self.active.clear()
+
+    def cleanup(self):
+        log("shutting down")
+        self.binds.remove()
+        self.mouse.close()
+        write_state("stopped")
+        for path in (PID_FILE, STATE_FILE):
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
+
+def already_running():
+    try:
+        with open(PID_FILE) as fh:
+            pid = int(fh.read().strip())
+    except (OSError, ValueError):
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def selftest():
+    cfg = load_config()
+    print("config file : %s" % (CONFIG_FILE if os.path.exists(CONFIG_FILE) else "(defaults)"))
+    for key in sorted(DEFAULTS):
+        print("  %-12s %s" % (key, cfg[key]))
+    mouse = VirtualMouse()
+    print("\nuinput device created OK (no events emitted)")
+    games = GameWatch(cfg)
+    active = games.evaluate()
+    print("game detected: %s%s" % (active, (" -> " + games.reason) if games.reason else ""))
+    mouse.close()
+    print("device destroyed OK")
+
+
+def main():
+    if "--selftest" in sys.argv:
+        selftest()
+        return
+    if already_running():
+        log("already running, exiting")
+        sys.exit(0)
+    cfg = load_config()
+    daemon = Daemon(cfg)
+    with open(PID_FILE, "w") as fh:
+        fh.write("%d\n" % os.getpid())
+    try:
+        daemon.run()
+    except Exception:
+        daemon.cleanup()
+        raise
+
+
+if __name__ == "__main__":
+    main()
